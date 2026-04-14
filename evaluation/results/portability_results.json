@@ -1,0 +1,57 @@
+{
+  "application_api_call": "PhysMCPOrchestrator.execute_task(task)",
+  "descriptor_shared_key_ratio": 1.0,
+  "invocation_shared_key_ratio": 1.0,
+  "runs": [
+    {
+      "backend_role": "edge",
+      "metadata_key_count": 1,
+      "output_keys": "label_index,probabilities,vector_norm",
+      "required_modalities": "digital_vector",
+      "selected_backend": "edge-backend",
+      "success": true
+    },
+    {
+      "backend_role": "wetware",
+      "metadata_key_count": 2,
+      "output_keys": "decoded_label,firing_rate_hz,observation_window_ms,spike_count",
+      "required_modalities": "spikes",
+      "selected_backend": "wetware-backend",
+      "success": true
+    },
+    {
+      "backend_role": "chemical",
+      "metadata_key_count": 1,
+      "output_keys": "activation_score,converged,intermediate_concentration,label,product_concentration",
+      "required_modalities": "concentration",
+      "selected_backend": "chemical-backend",
+      "success": true
+    }
+  ],
+  "shared_descriptor_keys": [
+    "backend_id",
+    "capability",
+    "custom_metadata",
+    "description",
+    "display_name",
+    "input_contracts",
+    "lifecycle",
+    "output_contracts",
+    "policy",
+    "telemetry",
+    "timing",
+    "twin_binding",
+    "version"
+  ],
+  "shared_invocation_keys": [
+    "backend_id",
+    "backend_state",
+    "confidence",
+    "execution_latency_ms",
+    "notes",
+    "output_payload",
+    "task_id"
+  ],
+  "successful_runs": 3,
+  "total_runs": 3
+}
