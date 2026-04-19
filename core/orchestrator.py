@@ -36,8 +36,10 @@ class OrchestrationRunResult(BaseModel):
     decision: OrchestrationDecision
     preparation: AdapterPreparationResult | None = None
     invocation: AdapterInvocationResult | None = None
+    telemetry_before: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
     telemetry_after: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
     recovery_actions: list[str] = Field(default_factory=list)
+    validation_failures: list[str] = Field(default_factory=list)
     success: bool = False
     failure_reason: str | None = None
 
@@ -68,13 +70,21 @@ class PhysMCPOrchestrator:
 
     def plan_task(self, task: TaskRequest) -> MatchReport:
         """Rank all known backends for the given task request."""
-        return self._matcher.rank_backends(task=task, descriptors=self._registry.list_descriptors())
+        descriptors = self._registry.list_descriptors()
+        if task.direct_backend_id is not None:
+            descriptors = [descriptor for descriptor in descriptors if descriptor.backend_id == task.direct_backend_id]
+        runtime_state = self._registry.telemetry_snapshot()
+        return self._matcher.rank_backends(
+            task=task,
+            descriptors=descriptors,
+            runtime_state=runtime_state,
+        )
 
     def execute_task(self, task: TaskRequest) -> OrchestrationRunResult:
         """Execute one task through the selected backend.
 
         If allowed by the task request, the orchestrator may fall back to the next
-        accepted candidate when preparation or invocation fails.
+        accepted candidate when preparation, invocation, or postcondition checks fail.
         """
         report = self.plan_task(task)
         decision = OrchestrationDecision(
@@ -85,11 +95,16 @@ class PhysMCPOrchestrator:
 
         accepted_candidates = report.accepted_candidates()
         if not accepted_candidates:
-            decision.notes.append("No accepted backend candidates were found.")
+            if task.direct_backend_id and not self._registry.has_backend(task.direct_backend_id):
+                decision.notes.append(f"Directed backend '{task.direct_backend_id}' is not registered.")
+                failure_reason = f"Directed backend '{task.direct_backend_id}' not found."
+            else:
+                decision.notes.append("No accepted backend candidates were found.")
+                failure_reason = "No compatible backend found."
             return OrchestrationRunResult(
                 decision=decision,
                 success=False,
-                failure_reason="No compatible backend found.",
+                failure_reason=failure_reason,
             )
 
         candidate_queue = accepted_candidates
@@ -110,6 +125,7 @@ class PhysMCPOrchestrator:
                     f"Selected primary candidate '{candidate.backend_id}'."
                 )
 
+            telemetry_before = adapter.collect_telemetry()
             preparation = adapter.prepare(task)
             if not preparation.prepared:
                 last_failure_reason = (
@@ -120,6 +136,7 @@ class PhysMCPOrchestrator:
                     return OrchestrationRunResult(
                         decision=decision,
                         preparation=preparation,
+                        telemetry_before=telemetry_before,
                         success=False,
                         failure_reason=last_failure_reason,
                     )
@@ -136,20 +153,44 @@ class PhysMCPOrchestrator:
                     return OrchestrationRunResult(
                         decision=decision,
                         preparation=preparation,
+                        telemetry_before=telemetry_before,
                         success=False,
                         failure_reason=last_failure_reason,
                     )
                 continue
 
             telemetry_after = adapter.collect_telemetry()
+            validation_failures = self._validate_postconditions(task, invocation, telemetry_after)
             recovery_actions = self._maybe_recover(adapter, telemetry_after)
+
+            if validation_failures:
+                last_failure_reason = (
+                    f"Postcondition validation failed for backend '{candidate.backend_id}': "
+                    + "; ".join(validation_failures)
+                )
+                decision.notes.append(last_failure_reason)
+                if not task.allow_fallback:
+                    return OrchestrationRunResult(
+                        decision=decision,
+                        preparation=preparation,
+                        invocation=invocation,
+                        telemetry_before=telemetry_before,
+                        telemetry_after=telemetry_after,
+                        recovery_actions=recovery_actions,
+                        validation_failures=validation_failures,
+                        success=False,
+                        failure_reason=last_failure_reason,
+                    )
+                continue
 
             return OrchestrationRunResult(
                 decision=decision,
                 preparation=preparation,
                 invocation=invocation,
+                telemetry_before=telemetry_before,
                 telemetry_after=telemetry_after,
                 recovery_actions=recovery_actions,
+                validation_failures=validation_failures,
                 success=True,
             )
 
@@ -168,6 +209,43 @@ class PhysMCPOrchestrator:
         """Recalibrate one backend through its adapter."""
         adapter = self._registry.get_adapter(backend_id)
         return adapter.recalibrate()
+
+    @staticmethod
+    def _validate_postconditions(
+        task: TaskRequest,
+        invocation: AdapterInvocationResult,
+        telemetry_after: dict[str, float | int | str | bool | None],
+    ) -> list[str]:
+        failures: list[str] = []
+
+        if invocation.confidence is not None and invocation.confidence < task.min_confidence:
+            failures.append(
+                f"confidence {invocation.confidence:.3f} is below required threshold {task.min_confidence:.3f}"
+            )
+
+        if task.required_telemetry_fields:
+            missing = sorted(
+                field for field in task.required_telemetry_fields if field not in telemetry_after
+            )
+            if missing:
+                failures.append("missing required telemetry fields: " + ", ".join(missing))
+
+        if task.max_twin_age_ms is not None:
+            age = telemetry_after.get("age_of_information_ms")
+            if not isinstance(age, (int, float)):
+                failures.append("age_of_information_ms is required but missing")
+            elif age > task.max_twin_age_ms:
+                failures.append(
+                    f"age_of_information_ms {age:.2f} exceeds bound {task.max_twin_age_ms:.2f}"
+                )
+
+        if task.continuous_monitoring_required and "health_status" not in telemetry_after:
+            failures.append("continuous monitoring required but health_status is missing")
+
+        if telemetry_after.get("health_status") == "offline":
+            failures.append("backend transitioned to offline state")
+
+        return failures
 
     @staticmethod
     def _maybe_recover(

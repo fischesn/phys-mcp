@@ -84,6 +84,23 @@ class TaskRequest(BaseModel):
         default=True,
         description="Whether the orchestrator may reroute to a secondary backend if needed.",
     )
+    direct_backend_id: str | None = Field(
+        default=None,
+        description="If set, restrict execution to this concrete backend identifier.",
+    )
+    max_twin_age_ms: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="Maximum acceptable age of information / twin staleness if exposed.",
+    )
+    required_telemetry_fields: list[str] = Field(
+        default_factory=list,
+        description="Telemetry fields that must be available for the task to be admissible.",
+    )
+    human_supervision_available: bool = Field(
+        default=False,
+        description="Whether required human supervision is available for this session.",
+    )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Additional application-specific task metadata.",
@@ -97,12 +114,28 @@ class TaskRequest(BaseModel):
             raise ValueError("task_id and summary must not be empty.")
         return stripped
 
+    @field_validator("direct_backend_id")
+    @classmethod
+    def validate_direct_backend_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("direct_backend_id must not be empty when provided.")
+        return stripped
+
     @field_validator("required_input_modalities")
     @classmethod
     def validate_modalities(cls, value: list[SignalModality]) -> list[SignalModality]:
         if not value:
             raise ValueError("required_input_modalities must contain at least one modality.")
         return list(dict.fromkeys(value))
+
+    @field_validator("required_telemetry_fields")
+    @classmethod
+    def validate_required_telemetry_fields(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
 
     @model_validator(mode="after")
     def validate_monitoring_vs_latency(self) -> "TaskRequest":

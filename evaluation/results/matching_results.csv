@@ -1,7 +1,7 @@
 case,expected_backend,predicted_backend,correct,top_score,second_score,score_margin
-edge_classification,edge-backend,edge-backend,True,110.0,0.0,110.0
-wetware_temporal_inference,wetware-backend,wetware-backend,True,119.0,0.0,119.0
-chemical_sensing,chemical-backend,chemical-backend,True,112.0,0.0,112.0
-edge_monitoring,edge-backend,edge-backend,True,117.0,0.0,117.0
-wetware_control,wetware-backend,wetware-backend,True,114.0,0.0,114.0
+edge_classification,edge-backend,edge-backend,True,121.0,0.0,121.0
+wetware_temporal_inference,wetware-backend,wetware-backend,True,128.0,0.0,128.0
+chemical_sensing,chemical-backend,chemical-backend,True,117.0,0.0,117.0
+edge_monitoring,edge-backend,edge-backend,True,127.0,0.0,127.0
+wetware_control,wetware-backend,wetware-backend,True,124.0,0.0,124.0
 unsupported_control_only,,,True,0.0,0.0,0.0

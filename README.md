@@ -23,7 +23,7 @@ The prototype currently supports:
 - **Lifecycle handling**, including reset and recalibration
 - **Telemetry collection**
 - **Fallback routing** when a primary backend fails
-- **Evaluation scripts** for overhead, portability, and matching quality
+- **Evaluation scripts** for overhead, portability, baseline comparison, failure campaigns, and an externalized backend path
 
 The three representative backend classes are:
 
@@ -35,6 +35,9 @@ The three representative backend classes are:
 
 - **Fast edge backend**  
   vector/tensor-oriented, low latency, device-like drift and recovery semantics
+
+- **Optional Cortical Labs backend target**  
+  adapter targeting the public CL API / CL SDK Simulator for real wetware-style stimulation and recording
 
 ---
 
@@ -186,8 +189,10 @@ The current prototype environment uses:
 - **matplotlib** for evaluation plots
 - **pytest** for later test support
 
-The current version intentionally avoids a web/API stack. The prototype is implemented as an
-**in-process orchestration system** rather than a networked service.
+The core prototype remains intentionally lightweight and in-process, but the repository now also contains a
+small **HTTP-based remote edge service** used to demonstrate one externalized backend path for the evaluation.
+An additional optional adapter targets the public **Cortical Labs CL API / CL SDK Simulator** when the
+external `cl-sdk` package is installed.
 
 ---
 
@@ -211,7 +216,10 @@ phys-mcp-prototype/
 │   ├── base_adapter.py
 │   ├── chemical_adapter.py
 │   ├── wetware_adapter.py
-│   └── edge_adapter.py
+│   ├── edge_adapter.py
+│   ├── remote_edge_adapter.py
+│   ├── fault_injecting_adapter.py
+│   └── cortical_labs_adapter.py
 ├── twins/
 │   ├── __init__.py
 │   ├── chemical_twin.py
@@ -222,7 +230,8 @@ phys-mcp-prototype/
 │   ├── common.py
 │   ├── demo_discovery_and_matching.py
 │   ├── demo_invocation_and_telemetry.py
-│   └── demo_fallback_and_recalibration.py
+│   ├── demo_fallback_and_recalibration.py
+│   └── demo_cortical_labs_adapter.py
 ├── evaluation/
 │   ├── __init__.py
 │   ├── common.py
@@ -230,7 +239,11 @@ phys-mcp-prototype/
 │   ├── evaluate_overhead.py
 │   ├── evaluate_portability.py
 │   ├── evaluate_matching.py
+│   ├── evaluate_matching_baselines.py
+│   ├── evaluate_failure_campaign.py
+│   ├── evaluate_externalized_backend.py
 │   └── results/
+├── remote/
 └── tests/
 ```
 
@@ -517,3 +530,43 @@ Possible future additions include:
 - formal tests in `tests/`
 - serialization examples for backend descriptors
 - tighter integration of prototype outputs into the paper figures and tables
+
+---
+
+## Extended evaluation scripts
+
+In addition to the original scripts, the repository now includes:
+
+- `evaluation/evaluate_externalized_backend.py`
+  validates one remote HTTP-backed backend path
+- `evaluation/evaluate_failure_campaign.py`
+  runs a small robustness campaign with stale twin state, policy rejection, telemetry loss, and fallback scenarios
+- `evaluation/evaluate_matching_baselines.py`
+  compares the full phys-MCP matcher against simpler baseline selectors
+
+The remote service used by the evaluation lives in `remote/edge_service.py` and is started automatically by the
+corresponding evaluation helpers.
+
+
+---
+
+## Optional integration target: Cortical Labs CL API
+
+The repository now contains `adapters/cortical_labs_adapter.py`, an example adapter that targets the
+public **Cortical Labs CL API** and its **CL SDK Simulator**. This adapter is intentionally optional:
+it is not required for the reported quantitative evaluation, but it shows how phys-MCP can wrap an
+existing wetware-facing Python API rather than only local mock backends.
+
+To try it locally, install the optional SDK package in your virtual environment:
+
+```bash
+python -m pip install cl-sdk
+```
+
+Then run the demo:
+
+```bash
+python demos/demo_cortical_labs_adapter.py
+```
+
+Without the SDK, the adapter remains importable but reports itself as unavailable at preparation time.

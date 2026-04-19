@@ -17,11 +17,13 @@ def bootstrap_project_root() -> Path:
 PROJECT_ROOT = bootstrap_project_root()
 
 from adapters.chemical_adapter import ChemicalAdapter
+from adapters.cortical_labs_adapter import CorticalLabsAdapter
 from adapters.edge_adapter import EdgeAdapter
+from adapters.remote_edge_adapter import RemoteEdgeAdapter
 from adapters.wetware_adapter import WetwareAdapter
 from core.orchestrator import PhysMCPOrchestrator
 from core.task_model import OutputPreference, TaskKind, TaskRequest
-from descriptors.capability_schema import SignalModality
+from descriptors.capability_schema import Locality, SignalModality
 
 
 def build_default_orchestrator() -> PhysMCPOrchestrator:
@@ -33,7 +35,33 @@ def build_default_orchestrator() -> PhysMCPOrchestrator:
     return orchestrator
 
 
-def make_edge_task(task_id: str = "task-edge") -> TaskRequest:
+def build_extended_orchestrator(remote_base_url: str | None = None) -> PhysMCPOrchestrator:
+    """Create an orchestrator optionally including an externalized remote edge backend."""
+    orchestrator = build_default_orchestrator()
+    if remote_base_url is not None:
+        orchestrator.register_adapter(RemoteEdgeAdapter(base_url=remote_base_url))
+    return orchestrator
+
+
+def build_live_target_orchestrator(
+    remote_base_url: str | None = None,
+    *,
+    include_cortical_labs: bool = False,
+) -> PhysMCPOrchestrator:
+    """Create an orchestrator with optional live-target adapters."""
+    orchestrator = build_extended_orchestrator(remote_base_url=remote_base_url)
+    if include_cortical_labs:
+        orchestrator.register_adapter(CorticalLabsAdapter())
+    return orchestrator
+
+
+def make_edge_task(
+    task_id: str = "task-edge",
+    *,
+    preferred_locality: Locality | None = Locality.EDGE,
+    direct_backend_id: str | None = None,
+    min_confidence: float = 0.2,
+) -> TaskRequest:
     """Create a representative low-latency edge classification task."""
     return TaskRequest(
         task_id=task_id,
@@ -42,12 +70,19 @@ def make_edge_task(task_id: str = "task-edge") -> TaskRequest:
         required_input_modalities=[SignalModality.DIGITAL_VECTOR],
         preferred_output=OutputPreference.SCORE,
         latency_budget_ms=20.0,
-        min_confidence=0.2,
+        min_confidence=min_confidence,
+        preferred_locality=preferred_locality,
+        direct_backend_id=direct_backend_id,
         metadata={"input_vector": [0.1, 0.3, 0.5, 0.7]},
     )
 
 
-def make_wetware_task(task_id: str = "task-wetware") -> TaskRequest:
+def make_wetware_task(
+    task_id: str = "task-wetware",
+    *,
+    human_supervision_available: bool = True,
+    direct_backend_id: str | None = None,
+) -> TaskRequest:
     """Create a representative closed-loop temporal inference task."""
     return TaskRequest(
         task_id=task_id,
@@ -58,6 +93,9 @@ def make_wetware_task(task_id: str = "task-wetware") -> TaskRequest:
         latency_budget_ms=120.0,
         continuous_monitoring_required=True,
         min_confidence=0.2,
+        human_supervision_available=human_supervision_available,
+        direct_backend_id=direct_backend_id,
+        required_telemetry_fields=["health_status", "drift_score"],
         metadata={
             "stimulation_strength": 0.65,
             "observation_window_ms": 140.0,
@@ -65,7 +103,14 @@ def make_wetware_task(task_id: str = "task-wetware") -> TaskRequest:
     )
 
 
-def make_chemical_task(task_id: str = "task-chemical", input_level: float = 1.4) -> TaskRequest:
+def make_chemical_task(
+    task_id: str = "task-chemical",
+    input_level: float = 1.4,
+    *,
+    max_twin_age_ms: float | None = None,
+    required_telemetry_fields: list[str] | None = None,
+    direct_backend_id: str | None = None,
+) -> TaskRequest:
     """Create a representative concentration-driven sensing task."""
     return TaskRequest(
         task_id=task_id,
@@ -75,7 +120,52 @@ def make_chemical_task(task_id: str = "task-chemical", input_level: float = 1.4)
         preferred_output=OutputPreference.STATE_ESTIMATE,
         latency_budget_ms=15000.0,
         min_confidence=0.2,
+        max_twin_age_ms=max_twin_age_ms,
+        required_telemetry_fields=required_telemetry_fields or [],
+        direct_backend_id=direct_backend_id,
         metadata={"input_level": input_level},
+    )
+
+
+def make_remote_edge_monitoring_task(task_id: str = "task-remote-edge") -> TaskRequest:
+    """Create a task that prefers a remote edge/fog-style backend with telemetry."""
+    return TaskRequest(
+        task_id=task_id,
+        task_kind=TaskKind.MONITORING,
+        summary="Telemetry-aware vector monitoring task for a remote backend.",
+        required_input_modalities=[SignalModality.DIGITAL_VECTOR],
+        preferred_output=OutputPreference.TELEMETRY_AWARE_RESULT,
+        latency_budget_ms=30.0,
+        min_confidence=0.25,
+        preferred_locality=Locality.FOG,
+        required_telemetry_fields=["health_status", "drift_score"],
+        continuous_monitoring_required=True,
+        metadata={"input_vector": [0.2, 0.2, 0.4, 0.9]},
+    )
+
+
+def make_cortical_task(task_id: str = "task-cortical") -> TaskRequest:
+    """Create a representative stimulation/recording task for the CL API adapter."""
+    return TaskRequest(
+        task_id=task_id,
+        task_kind=TaskKind.CONTROL,
+        summary="Closed-loop wetware stimulation task for an existing API-backed backend.",
+        required_input_modalities=[SignalModality.SPIKES],
+        preferred_output=OutputPreference.TELEMETRY_AWARE_RESULT,
+        latency_budget_ms=10.0,
+        min_confidence=0.0,
+        continuous_monitoring_required=True,
+        preferred_locality=Locality.LAB,
+        required_telemetry_fields=["health_status", "last_latency_ms"],
+        human_supervision_available=True,
+        metadata={
+            "channel": 0,
+            "current_uA": 6.0,
+            "burst_count": 2,
+            "burst_frequency_hz": 20.0,
+            "observation_window_ms": 50.0,
+            "record": True,
+        },
     )
 
 
@@ -104,7 +194,12 @@ def print_run_summary(run_result) -> None:
         print(f"Latency (ms): {run_result.invocation.execution_latency_ms:.3f}")
         print(f"Confidence: {run_result.invocation.confidence}")
         print(f"Output payload: {run_result.invocation.output_payload}")
+    print(f"Telemetry before: {run_result.telemetry_before}")
     print(f"Telemetry after: {run_result.telemetry_after}")
+    if run_result.validation_failures:
+        print("Validation failures:")
+        for failure in run_result.validation_failures:
+            print(f"  - {failure}")
     if run_result.recovery_actions:
         print("Recovery actions:")
         for action in run_result.recovery_actions:

@@ -55,6 +55,7 @@ def evaluate() -> dict:
                 preferred_output=OutputPreference.TELEMETRY_AWARE_RESULT,
                 latency_budget_ms=100.0,
                 continuous_monitoring_required=True,
+                human_supervision_available=True,
                 metadata={"stimulation_strength": 0.7, "observation_window_ms": 150.0},
             ),
             "expected_backend": "wetware-backend",

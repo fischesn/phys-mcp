@@ -1,6 +1,23 @@
 {
   "application_api_call": "PhysMCPOrchestrator.execute_task(task)",
+  "descriptor_backends": [
+    "chemical-backend",
+    "cortical-labs-backend",
+    "edge-backend",
+    "remote-edge-backend",
+    "wetware-backend"
+  ],
   "descriptor_shared_key_ratio": 1.0,
+  "existing_api_adapter": {
+    "backend_id": "cortical-labs-backend",
+    "display_name": "Cortical Labs CL API Backend",
+    "lifecycle_reset_modes": "soft_reset,rest,recalibrate",
+    "prepare_details": "Cortical Labs SDK not available. Install cl-sdk or run on a CL1 system to enable this adapter.",
+    "prepare_ready": false,
+    "required_modalities": "spikes",
+    "sdk_available": false,
+    "telemetry_fields": "last_latency_ms,loop_timeout_events,drift_score"
+  },
   "invocation_shared_key_ratio": 1.0,
   "runs": [
     {
@@ -25,6 +42,14 @@
       "output_keys": "activation_score,converged,intermediate_concentration,label,product_concentration",
       "required_modalities": "concentration",
       "selected_backend": "chemical-backend",
+      "success": true
+    },
+    {
+      "backend_role": "remote_edge",
+      "metadata_key_count": 1,
+      "output_keys": "label_index,probabilities,vector_norm",
+      "required_modalities": "digital_vector",
+      "selected_backend": "remote-edge-backend",
       "success": true
     }
   ],
@@ -52,6 +77,6 @@
     "output_payload",
     "task_id"
   ],
-  "successful_runs": 3,
-  "total_runs": 3
+  "successful_runs": 4,
+  "total_runs": 4
 }
