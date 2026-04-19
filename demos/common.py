@@ -144,27 +144,34 @@ def make_remote_edge_monitoring_task(task_id: str = "task-remote-edge") -> TaskR
     )
 
 
-def make_cortical_task(task_id: str = "task-cortical") -> TaskRequest:
-    """Create a representative stimulation/recording task for the CL API adapter."""
+def make_cortical_task(
+    task_id: str = "task-cortical",
+    *,
+    direct_backend_id: str | None = "cortical-labs-backend",
+    allow_fallback: bool = False,
+) -> TaskRequest:
+    """Create a stimulation/recording task matching the regenerated CL adapter."""
     return TaskRequest(
         task_id=task_id,
         task_kind=TaskKind.CONTROL,
-        summary="Closed-loop wetware stimulation task for an existing API-backed backend.",
+        summary="Closed-loop wetware stimulation task for the Cortical Labs backend.",
         required_input_modalities=[SignalModality.SPIKES],
         preferred_output=OutputPreference.TELEMETRY_AWARE_RESULT,
-        latency_budget_ms=10.0,
+        latency_budget_ms=500.0,
         min_confidence=0.0,
         continuous_monitoring_required=True,
         preferred_locality=Locality.LAB,
-        required_telemetry_fields=["health_status", "last_latency_ms"],
+        direct_backend_id=direct_backend_id,
+        required_telemetry_fields=["readiness_state", "health_status", "backend_latency_ms"],
         human_supervision_available=True,
+        allow_fallback=allow_fallback,
         metadata={
-            "channel": 0,
-            "current_uA": 6.0,
-            "burst_count": 2,
-            "burst_frequency_hz": 20.0,
-            "observation_window_ms": 50.0,
-            "record": True,
+            "stimulation_pattern": {
+                "channels": [1],
+                "amplitude": 0.4,
+            },
+            "observation_window_ms": 100,
+            "pre_delay_ms": 20,
         },
     )
 

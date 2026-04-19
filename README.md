@@ -1,572 +1,690 @@
-# phys-MCP Prototype
+# phys-MCP v3.0
 
-This repository contains the prototype for the **phys-MCP** paper. The prototype validates a
-**control plane for heterogeneous physical neural network (PNN) backends**.
+`phys-MCP` is a substrate-aware control-plane prototype for exposing heterogeneous **physical neural network (PNN)** resources as discoverable, invocable, and monitorable software-visible backends.
 
-It does **not** validate real physical substrates. Instead, it implements:
+The system is designed for settings in which materially different computational substrates cannot be treated as ordinary stateless accelerators. Instead, they expose distinct I/O modalities, timing regimes, lifecycle constraints, observability limits, and health or validity conditions. `phys-MCP` provides a single orchestration layer above such backends while preserving these substrate-specific semantics.
 
-- a substrate-aware descriptor model,
-- a common orchestration layer,
-- lightweight digital-twin/mock backends for representative substrate classes,
-- runnable demo workflows,
-- and a small quantitative evaluation.
+This repository contains:
 
----
+- a Python reference implementation of the `phys-MCP` control plane
+- representative local prototype backends for chemical, wetware, and fast edge-style execution
+- an externalized remote edge backend path
+- a real API-backed integration path for **Cortical Labs**
+- minimal **Gemini-based** and **Ollama-based** agents that plan and execute tasks through `phys-MCP`
+- demos, tests, and evaluation scripts
 
-## What this prototype demonstrates
-
-The prototype currently supports:
-
-- **Discovery** of heterogeneous backend descriptors
-- **Explainable backend matching**
-- **Task orchestration** through one common control plane
-- **Lifecycle handling**, including reset and recalibration
-- **Telemetry collection**
-- **Fallback routing** when a primary backend fails
-- **Evaluation scripts** for overhead, portability, baseline comparison, failure campaigns, and an externalized backend path
-
-The three representative backend classes are:
-
-- **Chemical backend**  
-  concentration-driven, slow, explicit flush/recharge semantics
-
-- **Wetware backend**  
-  stimulation/observation semantics, viability-sensitive state, rest/recalibration lifecycle
-
-- **Fast edge backend**  
-  vector/tensor-oriented, low latency, device-like drift and recovery semantics
-
-- **Optional Cortical Labs backend target**  
-  adapter targeting the public CL API / CL SDK Simulator for real wetware-style stimulation and recording
+The current code base should be understood as a **research prototype**: it is operational, structured, and demonstrable, but not a production runtime.
 
 ---
 
-## Requirements
+## 1. Purpose of the system
 
-- Python **3.11** recommended
-- `pip`
-- `venv`
+`phys-MCP` exists to answer a practical systems problem:
 
-The prototype is designed to run on a single machine in a local virtual environment.
+> How can heterogeneous physical neural substrates be exposed to software in a way that supports discovery, task matching, invocation, monitoring, and lifecycle-aware control without flattening away the properties that actually matter?
+
+The prototype treats physical AI resources as **managed backends** rather than opaque one-off lab integrations. The central idea is that software should be able to ask:
+
+- What backends are available?
+- Which task types do they support?
+- Which input and output modalities do they require?
+- What timing regime do they operate in?
+- Are they ready right now?
+- What telemetry do they expose?
+- Can they be reset, recalibrated, or reused safely?
+- Can an agent or orchestrator choose among them in a principled way?
+
+`phys-MCP` answers these questions through a substrate-aware descriptor model, a matcher, an orchestrator, and backend-specific adapters.
 
 ---
 
-## Create a virtual environment
+## 2. High-level architecture
 
-### Windows PowerShell
+The implementation follows a three-part structure:
 
-Check that Python is available:
+### Control plane
+The control plane is responsible for:
 
-```powershell
-python --version
+- backend discovery
+- task-to-substrate matching
+- policy checking
+- directed or capability-based invocation
+- validation and fallback handling
+- collection of normalized result and telemetry information
+
+### Twin / runtime state
+The prototype keeps state that is relevant for runtime decisions, such as:
+
+- readiness
+- health
+- drift-related signals
+- telemetry freshness
+- calibration- or validity-like metadata
+
+This is not a full digital twin framework, but it is enough to make runtime state visible to the control logic.
+
+### Data / backend integration layer
+The data-plane side is implemented through adapters and backend-specific client logic:
+
+- local synthetic backends for representative substrate regimes
+- a remote edge path via HTTP
+- a real API-backed path via the Cortical Labs CL SDK / simulator
+- a foundation for additional future integrations
+
+---
+
+## 3. What the prototype can do
+
+### 3.1 Discover heterogeneous backends
+The orchestrator can enumerate backends described through a shared descriptor model.
+
+Each backend publishes information such as:
+
+- substrate class
+- supported task types
+- input/output contracts
+- timing semantics
+- lifecycle/reset semantics
+- telemetry fields
+- locality and tenancy constraints
+- health and observability characteristics
+
+### 3.2 Match tasks to backends
+Tasks can be routed in two ways:
+
+- **capability-driven**: let the matcher select the best compatible backend
+- **directed**: explicitly target a backend such as `cortical-labs-backend`
+
+Matching is based on descriptor compatibility and runtime signals rather than on mere endpoint presence.
+
+### 3.3 Execute tasks with telemetry-aware control
+A task execution can include:
+
+- preparation / readiness checks
+- session opening
+- backend invocation
+- postcondition validation
+- telemetry collection before and after execution
+- optional fallback to another backend
+
+### 3.4 Exercise representative synthetic backend regimes
+The prototype includes three core local regimes:
+
+- **chemical backend**
+- **wetware backend**
+- **edge backend**
+
+These are not intended as faithful physical simulators. Their role is to exercise control-plane behavior under clearly different operational conditions.
+
+### 3.5 Use an externalized backend path
+The remote edge path demonstrates that the same control-plane logic also works across an explicit service boundary.
+
+### 3.6 Use a real Cortical Labs path
+The repository includes a real adapter and client path for the **Cortical Labs CL API / CL SDK simulator**.
+
+Through this path, `phys-MCP` can:
+
+- open a CL session
+- submit a simple stimulation/recording task
+- collect normalized result data
+- capture structured recording artifact metadata
+- expose readiness, health, backend latency, observation latency, and recording path as telemetry
+
+### 3.7 Use LLM-based agents
+The repository also includes:
+
+- a **Gemini-based agent**
+- an **Ollama-based agent**
+
+These agents can:
+
+- discover backends through `phys-MCP`
+- ask an LLM to produce a structured execution plan
+- execute that plan only via `phys-MCP`
+- receive the result and telemetry
+- ask the model to summarize the outcome
+
+The agents do **not** call substrate APIs directly. This is intentional: `phys-MCP` remains the sole control plane.
+
+---
+
+## 4. Repository structure
+
+The current repository layout is:
+
+```text
+phys-mcp/
+  .env
+  LICENSE
+  README.md
+  __init__.py
+  requirements.txt
+
+  adapters/
+    __init__.py
+    base_adapter.py
+    chemical_adapter.py
+    cortical_labs_adapter.py
+    edge_adapter.py
+    fault_injecting_adapter.py
+    remote_edge_adapter.py
+    wetware_adapter.py
+
+  agent/
+    __init__.py
+    gemini_agent.py
+    ollama_agent.py
+
+  backends/
+    cortical/
+      cl_client.py
+
+  core/
+    __init__.py
+    matcher.py
+    orchestrator.py
+    task_model.py
+    twin_registry.py
+
+  demos/
+    __init__.py
+    common.py
+    demo_cortical_labs_adapter.py
+    demo_discovery_and_matching.py
+    demo_fallback_and_recalibration.py
+    demo_invocation_and_telemetry.py
+
+  descriptors/
+    __init__.py
+    capability_schema.py
+
+  evaluation/
+    __init__.py
+    common.py
+    evaluate_cortical_runtime.py
+    evaluate_externalized_backend.py
+    evaluate_failure_campaign.py
+    evaluate_gemini_agent.py
+    evaluate_matching.py
+    evaluate_matching_baselines.py
+    evaluate_overhead.py
+    evaluate_portability.py
+    plots.py
+    run_all_evaluations.py
+    results/
+
+  remote/
+    __init__.py
+    edge_service.py
+    service_controller.py
+
+  scripts/
+    cl_smoketest.py
+    cl_stim_record_test.py
+
+  tests/
+    conftest.py
+    test_cortical_labs_adapter.py
+    test_fullpaper_extensions.py
+
+  twins/
+    __init__.py
+    chemical_twin.py
+    edge_twin.py
+    wetware_twin.py
 ```
 
-Create the virtual environment in a local `.venv` directory:
+The repository may also contain local cache folders such as `.pytest_cache/` or Python bytecode directories; these are not functionally relevant.
+
+---
+
+## 5. Installation
+
+### 5.1 Create and activate a virtual environment
+
+#### Windows CMD
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+#### Windows PowerShell
 
 ```powershell
 python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-Activate it:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-If PowerShell blocks script execution, allow local scripts for the current user:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-Then activate again:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Upgrade `pip`, `setuptools`, and `wheel`:
-
-```powershell
-python -m pip install --upgrade pip setuptools wheel
-```
-
-Install the required libraries:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-Verify the installation:
-
-```powershell
-python -m pip list
-```
-
-Deactivate when finished:
-
-```powershell
-deactivate
-```
-
----
-
-### Linux / macOS / bash
-
-Check that Python is available:
+#### Linux / macOS
 
 ```bash
-python3 --version
-```
-
-Create the virtual environment:
-
-```bash
-python3 -m venv .venv
-```
-
-Activate it:
-
-```bash
-source .venv/bin/activate
-```
-
-Upgrade `pip`, `setuptools`, and `wheel`:
-
-```bash
-python -m pip install --upgrade pip setuptools wheel
-```
-
-Install the required libraries:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Verify the installation:
-
-```bash
-python -m pip list
-```
-
-Deactivate when finished:
-
-```bash
-deactivate
-```
-
----
-
-## Install from scratch: command summary
-
-### Windows PowerShell
-
-```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
-```
-
-### Linux / bash
-
-```bash
-python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
+### 5.2 Required Python packages
+
+At minimum, the consolidated setup should include:
+
+```txt
+python-dotenv
+cl-sdk
+google-genai
+requests
+pytest
+```
+
+Optional but useful:
+
+```txt
+jupyterlab
+ipywidgets
+```
+
+### 5.3 Runtime configuration
+
+Create a `.env` file in the project root. A typical starting point is:
+
+```dotenv
+# Cortical Labs SDK / Simulator
+CL_SDK_DURATION_SEC=60
+CL_SDK_RANDOM_SEED=42
+CL_SDK_ACCELERATED_TIME=1
+CL_SDK_SAMPLE_MEAN=170
+CL_SDK_SPIKE_PERCENTILE=99.995
+
+# Optional replay input
+# CL_SDK_REPLAY_PATH=
+# CL_SDK_REPLAY_START_OFFSET=0
+
+# Optional visualisation / websocket support
+# CL_SDK_WEBSOCKET=1
+# CL_SDK_WEBSOCKET_PORT=1025
+# CL_SDK_WEBSOCKET_HOST=127.0.0.1
+
+# Gemini
+GEMINI_API_KEY=YOUR_KEY_HERE
+
+# Ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:7b-instruct
+```
+
+Important: the same Python environment that runs `phys-MCP` must also have `cl-sdk` installed.
+
 ---
 
-## Installed libraries
+## 6. Basic smoke tests
 
-The current prototype environment uses:
+### 6.1 SDK smoke test
 
-- **pydantic** for typed descriptor models
-- **numpy** for numerical utilities
-- **scipy** for lightweight ODE-based chemical twin behavior
-- **matplotlib** for evaluation plots
-- **pytest** for later test support
+```bash
+python scripts/cl_smoketest.py
+```
 
-The core prototype remains intentionally lightweight and in-process, but the repository now also contains a
-small **HTTP-based remote edge service** used to demonstrate one externalized backend path for the evaluation.
-An additional optional adapter targets the public **Cortical Labs CL API / CL SDK Simulator** when the
-external `cl-sdk` package is installed.
+### 6.2 Stimulation and recording smoke test
+
+```bash
+python scripts/cl_stim_record_test.py
+```
+
+These tests verify the raw Cortical Labs path before the adapter, orchestrator, and agent layers are exercised.
 
 ---
 
-## Repository layout
+## 7. Main demos
+
+### 7.1 Discovery and matching demo
+
+```bash
+python -m demos.demo_discovery_and_matching
+```
+
+This demonstrates descriptor publication, backend discovery, and matcher decisions across the representative backend set.
+
+### 7.2 Invocation and telemetry demo
+
+```bash
+python -m demos.demo_invocation_and_telemetry
+```
+
+This demonstrates execution and telemetry collection on the representative backend set.
+
+### 7.3 Fallback and recalibration demo
+
+```bash
+python -m demos.demo_fallback_and_recalibration
+```
+
+This demonstrates recovery-oriented behavior such as fallback and recalibration handling.
+
+### 7.4 Cortical Labs adapter demo
+
+```bash
+python -m demos.demo_cortical_labs_adapter
+```
+
+This demo exercises:
+
+- orchestrator creation
+- backend discovery
+- directed task targeting `cortical-labs-backend`
+- backend preparation
+- invocation through the CL client
+- result and telemetry collection
+
+Typical result fields include:
+
+- `response_fingerprint`
+- `stim_channel`
+- `stim_amplitude_ua`
+- `observation_window_ms`
+- `recording_artifact`
+
+Typical telemetry includes:
+
+- `readiness_state`
+- `health_status`
+- `backend_latency_ms`
+- `observation_latency_ms`
+- `recording_path`
+- `channel_count`
+- `fps`
+
+---
+
+## 8. Evaluation scripts
+
+### 8.1 Run all bundled evaluations
+
+```bash
+python -m evaluation.run_all_evaluations
+```
+
+### 8.2 Real Cortical runtime evaluation
+
+```bash
+python -m evaluation.evaluate_cortical_runtime
+```
+
+This performs several directed runs against the Cortical Labs integration path and stores JSON/CSV results under `evaluation/results/`.
+
+### 8.3 Gemini agent evaluation
+
+```bash
+python -m evaluation.evaluate_gemini_agent
+```
+
+This performs several agent-driven runs and stores JSON/CSV results under `evaluation/results/`.
+
+### 8.4 Additional evaluation scripts
+
+The repository also contains dedicated scripts for:
+
+- `evaluation.evaluate_externalized_backend`
+- `evaluation.evaluate_failure_campaign`
+- `evaluation.evaluate_matching`
+- `evaluation.evaluate_matching_baselines`
+- `evaluation.evaluate_overhead`
+- `evaluation.evaluate_portability`
+
+These scripts can be run individually from the project root with `python -m ...`.
+
+---
+
+## 9. Agent-based access
+
+The repository provides two minimal agent clients on top of `phys-MCP`:
+
+- **Gemini-based agent**
+- **Ollama-based agent**
+
+Both agents follow the same principle:
+
+1. discover resources through `phys-MCP`
+2. ask an LLM to produce a structured execution plan
+3. execute that plan only through the `phys-MCP` orchestrator
+4. summarize the result and telemetry in natural language
+
+The agents do **not** call backend APIs such as Cortical Labs directly.  
+`phys-MCP` remains the sole control plane.
+
+### 9.1 Gemini agent
+
+Expected location:
 
 ```text
-phys-mcp-prototype/
-├── README.md
-├── requirements.txt
-├── descriptors/
-│   ├── __init__.py
-│   └── capability_schema.py
-├── core/
-│   ├── __init__.py
-│   ├── matcher.py
-│   ├── orchestrator.py
-│   ├── task_model.py
-│   └── twin_registry.py
-├── adapters/
-│   ├── __init__.py
-│   ├── base_adapter.py
-│   ├── chemical_adapter.py
-│   ├── wetware_adapter.py
-│   ├── edge_adapter.py
-│   ├── remote_edge_adapter.py
-│   ├── fault_injecting_adapter.py
-│   └── cortical_labs_adapter.py
-├── twins/
-│   ├── __init__.py
-│   ├── chemical_twin.py
-│   ├── wetware_twin.py
-│   └── edge_twin.py
-├── demos/
-│   ├── __init__.py
-│   ├── common.py
-│   ├── demo_discovery_and_matching.py
-│   ├── demo_invocation_and_telemetry.py
-│   ├── demo_fallback_and_recalibration.py
-│   └── demo_cortical_labs_adapter.py
-├── evaluation/
-│   ├── __init__.py
-│   ├── common.py
-│   ├── plots.py
-│   ├── evaluate_overhead.py
-│   ├── evaluate_portability.py
-│   ├── evaluate_matching.py
-│   ├── evaluate_matching_baselines.py
-│   ├── evaluate_failure_campaign.py
-│   ├── evaluate_externalized_backend.py
-│   └── results/
-├── remote/
-└── tests/
+agent/gemini_agent.py
 ```
 
----
+Requirements:
+- `google-genai`
+- `python-dotenv`
+- `GEMINI_API_KEY` in `.env`
 
-## Initial sanity checks
-
-After installation, test that the environment is usable:
-
-### Linux / bash
+Run from the project root:
 
 ```bash
-python -c "import numpy, scipy, matplotlib, pydantic; print('Environment OK')"
+python -m agent.gemini_agent
 ```
 
-### Windows PowerShell
+This agent is useful when a stronger cloud LLM is available and a Gemini API key is already configured.
 
-```powershell
-python -c "import numpy, scipy, matplotlib, pydantic; print('Environment OK')"
-```
+### 9.2 Ollama agent
 
----
-
-# Running the prototype
-
-All commands below assume that:
-
-- you are inside the project root `phys-mcp-prototype/`
-- the virtual environment is activated
-
----
-
-## Run the demos
-
-The demos live in `demos/` and are intended to be run directly as standalone scripts.
-
-### 1. Discovery and matching demo
-
-This demo shows:
-
-- backend discovery,
-- explainable ranking,
-- and task-to-substrate selection.
-
-#### Linux / bash
-
-```bash
-python demos/demo_discovery_and_matching.py
-```
-
-#### Windows PowerShell
-
-```powershell
-python demos\demo_discovery_and_matching.py
-```
-
----
-
-### 2. Invocation, telemetry, and lifecycle demo
-
-This demo shows:
-
-- end-to-end orchestration,
-- repeated chemical backend invocations,
-- telemetry collection,
-- and lifecycle-triggered recovery.
-
-#### Linux / bash
-
-```bash
-python demos/demo_invocation_and_telemetry.py
-```
-
-#### Windows PowerShell
-
-```powershell
-python demos\demo_invocation_and_telemetry.py
-```
-
----
-
-### 3. Fallback and recalibration demo
-
-This demo shows:
-
-- drift-triggered recalibration,
-- and fallback from a failing primary backend to a compatible backup backend.
-
-#### Linux / bash
-
-```bash
-python demos/demo_fallback_and_recalibration.py
-```
-
-#### Windows PowerShell
-
-```powershell
-python demos\demo_fallback_and_recalibration.py
-```
-
----
-
-## Run the evaluation scripts
-
-The evaluation scripts live in `evaluation/` and write result files into:
+Expected location:
 
 ```text
-evaluation/results/
+agent/ollama_agent.py
 ```
 
-### 1. Overhead evaluation
+Requirements:
+- `requests`
+- a running Ollama server
+- a locally installed model, for example:
+  - `qwen2.5:7b-instruct`
+  - `qwen2.5:14b-instruct`
 
-Measures **wall-clock control-plane overhead**, comparing direct backend access with orchestrated access.
-
-#### Linux / bash
+Typical setup:
 
 ```bash
-python evaluation/evaluate_overhead.py
+ollama pull qwen2.5:7b-instruct
+python -m agent.ollama_agent
 ```
 
-#### Windows PowerShell
+This agent is the preferred free and local option for immediate experimentation.
 
-```powershell
-python evaluation\evaluate_overhead.py
-```
+### 9.3 Current scope
 
-Outputs:
-- `evaluation/results/overhead_results.json`
-- `evaluation/results/overhead_results.csv`
-- `evaluation/results/overhead_bar_chart.png`
+The current agent implementations are intentionally minimal. They focus on:
+
+- backend discovery
+- structured planning
+- directed execution against the Cortical Labs path
+- concise result summarization
+
+They are operational demonstrations of **agent-facing control-plane access**, not full autonomous multi-agent systems.
 
 ---
 
-### 2. Portability evaluation
+## 10. Tests
 
-Measures how consistently the abstraction behaves across heterogeneous backends.
-
-#### Linux / bash
+Run the bundled tests with:
 
 ```bash
-python evaluation/evaluate_portability.py
+pytest -q
 ```
 
-#### Windows PowerShell
-
-```powershell
-python evaluation\evaluate_portability.py
-```
-
-Outputs:
-- `evaluation/results/portability_results.json`
-- `evaluation/results/portability_runs.csv`
-- `evaluation/results/portability_metadata_bar_chart.png`
-
----
-
-### 3. Matching evaluation
-
-Measures matcher behavior on a curated task suite.
-
-#### Linux / bash
+For the Cortical Labs adapter specifically:
 
 ```bash
-python evaluation/evaluate_matching.py
+pytest tests/test_cortical_labs_adapter.py -q
 ```
 
-#### Windows PowerShell
-
-```powershell
-python evaluation\evaluate_matching.py
-```
-
-Outputs:
-- `evaluation/results/matching_results.json`
-- `evaluation/results/matching_results.csv`
-- `evaluation/results/matching_accuracy_bar_chart.png`
+The tests validate descriptor structure, adapter behavior, and integration assumptions. They complement, but do not replace, the real simulator runs.
 
 ---
 
-## Run everything in sequence
+## 11. How the Cortical Labs integration works
 
-### Linux / bash
+The Cortical Labs path consists of two layers:
+
+### `backends/cortical/cl_client.py`
+This is the low-level client wrapper around the CL SDK. It handles:
+
+- session open/close
+- simple stimulation/recording cycles
+- health/readiness retrieval
+- recording artifact normalization
+
+### `adapters/cortical_labs_adapter.py`
+This is the `phys-MCP` adapter layer. It translates between:
+
+- `phys-MCP` task and telemetry semantics
+- and the CL client’s concrete runtime calls
+
+This separation keeps backend-specific API handling in the client and control-plane semantics in the adapter.
+
+---
+
+## 12. How the agent integrations work
+
+### Planning
+The LLM receives:
+- a planning prompt
+- a user goal
+
+It returns structured JSON such as:
+
+```json
+{
+  "action": "run_cortical_screen",
+  "arguments": {
+    "preferred_backend_id": "cortical-labs-backend",
+    "channel": 24,
+    "amplitude": 0.6,
+    "observation_window_ms": 100,
+    "pre_delay_ms": 10,
+    "allow_fallback": false,
+    "human_supervision_available": true
+  },
+  "rationale": "..."
+}
+```
+
+### Execution
+The agent converts this plan into a `phys-MCP` task and calls the orchestrator.
+
+### Summarization
+The LLM then receives the structured result and telemetry and produces a short human-readable explanation.
+
+This keeps the LLM in a **planning and summarization role**, while all actual backend control remains in `phys-MCP`.
+
+---
+
+## 13. Recommended workflow for development
+
+Use this order:
 
 ```bash
-python demos/demo_discovery_and_matching.py
-python demos/demo_invocation_and_telemetry.py
-python demos/demo_fallback_and_recalibration.py
-python evaluation/evaluate_overhead.py
-python evaluation/evaluate_portability.py
-python evaluation/evaluate_matching.py
+python scripts/cl_smoketest.py
+python scripts/cl_stim_record_test.py
+python -m demos.demo_cortical_labs_adapter
+pytest tests/test_cortical_labs_adapter.py -q
+python -m evaluation.evaluate_cortical_runtime
+python -m agent.gemini_agent
 ```
 
-### Windows PowerShell
-
-```powershell
-python demos\demo_discovery_and_matching.py
-python demos\demo_invocation_and_telemetry.py
-python demos\demo_fallback_and_recalibration.py
-python evaluation\evaluate_overhead.py
-python evaluation\evaluate_portability.py
-python evaluation\evaluate_matching.py
-```
-
----
-
-## Interpreting the results
-
-### Overhead
-The overhead evaluation reports **wall-clock runtime overhead** added by the control plane.
-This is intentionally different from the **simulated substrate latency** reported by the twins.
-
-### Portability
-The portability evaluation reports how consistently descriptors and invocation results remain
-structured across different backend classes, and how much backend-specific metadata each task needs.
-
-### Matching
-The matching evaluation reports the behavior of the rule-based matcher on a curated task set.
-It should be interpreted as a **plausibility check**, not as a broad statistical claim of optimality.
-
----
-
-## Notes on scientific scope
-
-This prototype is intentionally modest.
-
-It does **not** claim:
-- experimental validation of real physical neural substrates,
-- realistic wet-lab or device-physics fidelity,
-- or optimal matching across a large empirical benchmark.
-
-It **does** claim:
-- a working control-plane abstraction,
-- substrate-aware descriptors,
-- semantically distinct backend classes,
-- demonstrable lifecycle and telemetry handling,
-- and a small but reproducible evaluation.
-
-That is the intended contribution of the paper prototype.
-
----
-
-## Troubleshooting
-
-### PowerShell execution policy error
-If activation fails, run:
-
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-Then activate again:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-### Import/path issues
-Always run the commands from the **project root** `phys-mcp-prototype/`.
-
-### Missing packages
-Reinstall dependencies:
+or, for the free local agent path:
 
 ```bash
-python -m pip install -r requirements.txt
+python -m agent.ollama_agent
 ```
 
-or in PowerShell:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-### Regenerate evaluation outputs
-Delete the files in `evaluation/results/` and rerun the evaluation scripts.
+If the first two scripts fail, there is no point debugging the adapter or the agents yet.
 
 ---
 
-## Possible next extensions
+## 14. Known scope and limitations
 
-Possible future additions include:
+This repository is a research prototype and should be interpreted accordingly.
 
-- `fastapi` / `uvicorn` for an HTTP-facing orchestrator
-- `pandas` for richer tabular evaluation
-- formal tests in `tests/`
-- serialization examples for backend descriptors
-- tighter integration of prototype outputs into the paper figures and tables
+### What it already demonstrates
+- substrate-aware backend discovery
+- task matching and directed execution
+- telemetry-aware control
+- an externalized remote backend path
+- a real API-backed Cortical Labs integration path
+- working Gemini- and Ollama-based agents on top of `phys-MCP`
 
----
+### What it does not claim
+- production readiness
+- broad performance benchmarking of real wetware systems
+- full digital-twin lifecycle management
+- general-purpose autonomous multi-agent orchestration
+- complete support for all physical substrate classes
 
-## Extended evaluation scripts
-
-In addition to the original scripts, the repository now includes:
-
-- `evaluation/evaluate_externalized_backend.py`
-  validates one remote HTTP-backed backend path
-- `evaluation/evaluate_failure_campaign.py`
-  runs a small robustness campaign with stale twin state, policy rejection, telemetry loss, and fallback scenarios
-- `evaluation/evaluate_matching_baselines.py`
-  compares the full phys-MCP matcher against simpler baseline selectors
-
-The remote service used by the evaluation lives in `remote/edge_service.py` and is started automatically by the
-corresponding evaluation helpers.
-
+The Cortical Labs integration should currently be understood as:
+- a real wetware-facing API path
+- successfully exercised end to end
+- useful for research and demonstration
+- still narrow in scope
 
 ---
 
-## Optional integration target: Cortical Labs CL API
+## 15. Practical debugging advice
 
-The repository now contains `adapters/cortical_labs_adapter.py`, an example adapter that targets the
-public **Cortical Labs CL API** and its **CL SDK Simulator**. This adapter is intentionally optional:
-it is not required for the reported quantitative evaluation, but it shows how phys-MCP can wrap an
-existing wetware-facing Python API rather than only local mock backends.
+### If `cl-sdk` import fails
+Check that you are running the command inside the correct project virtual environment.
 
-To try it locally, install the optional SDK package in your virtual environment:
+### If the Cortical demo fails
+Re-run:
 
 ```bash
-python -m pip install cl-sdk
+python scripts/cl_smoketest.py
+python scripts/cl_stim_record_test.py
 ```
 
-Then run the demo:
+before debugging the adapter.
 
-```bash
-python demos/demo_cortical_labs_adapter.py
-```
+### If the Gemini agent fails
+Check:
 
-Without the SDK, the adapter remains importable but reports itself as unavailable at preparation time.
+- `GEMINI_API_KEY`
+- `google-genai` installation
+- whether `python -m agent.gemini_agent` is executed from the project root
+- whether the Cortical Labs demo already works independently
+
+### If the Ollama agent fails
+Check:
+
+- whether `ollama serve` is running
+- whether the configured model is installed
+- `OLLAMA_BASE_URL`
+- `OLLAMA_MODEL`
+- whether the Cortical Labs demo already works independently
+
+---
+
+## 16. Summary
+
+`phys-MCP v3.0` is a unified research prototype for treating heterogeneous physical AI resources as discoverable, invocable, telemetry-aware backends under a common control plane.
+
+Its current strengths are:
+
+- coherent substrate-aware control semantics
+- a working real API-backed Cortical Labs path
+- reproducible runtime evaluation of that path
+- and minimal but functional Gemini- and Ollama-based agents on top of the same control plane
+
+That makes the repository useful both as:
+
+- a systems research prototype
+- and a practical experimental platform for future integrations and demonstrations

@@ -1,19 +1,15 @@
-"""Adapter targeting the public Cortical Labs CL API / CL SDK Simulator.
-
-This adapter is intentionally optional. It allows phys-MCP to target an existing,
-digitally addressable wetware interface when the ``cl`` module from the Cortical
-Labs SDK is available. In environments without the SDK, the adapter remains
-importable and reports itself as unavailable at preparation time.
-"""
+"""Cortical Labs adapter for the phys-MCP prototype."""
 
 from __future__ import annotations
 
-import os
 import time
-from importlib import import_module
-from typing import Any
 
 from adapters.base_adapter import AdapterInvocationResult, AdapterPreparationResult, BaseAdapter
+from backends.cortical.cl_client import (
+    CLClient,
+    CorticalLabsInvocationError,
+    CorticalLabsUnavailableError,
+)
 from core.task_model import TaskRequest
 from descriptors.capability_schema import (
     CapabilityDescriptor,
@@ -38,39 +34,19 @@ from descriptors.capability_schema import (
 
 
 class CorticalLabsAdapter(BaseAdapter):
-    """Adapter for the Cortical Labs CL API and CL SDK Simulator.
+    def __init__(self, backend_id: str = "cortical-labs-backend") -> None:
+        self._client = CLClient()
+        self._session_open = False
+        self._last_backend_latency_ms: float | None = None
+        self._last_observation_latency_ms: float | None = None
+        self._last_recording_artifact: dict | None = None
+        self._last_health_status: str = "unknown"
+        self._last_readiness_state: str = "unavailable"
+        self._last_channel_count: int | None = None
+        self._last_fps: float | None = None
+        self._last_age_of_information_ms: float | None = None
+        self._last_prepare_timestamp: float | None = None
 
-    The adapter maps phys-MCP task requests onto the public Python entry points
-    documented for ``cl.open()``, ``neurons.record()``, and ``neurons.stim()``.
-    It is designed as a best-effort integration example rather than as a fully
-    validated wetware control stack.
-    """
-
-    def __init__(
-        self,
-        backend_id: str = 'cortical-labs-backend',
-        *,
-        cl_module: Any | None = None,
-        take_control: bool = True,
-        prefer_simulator: bool = True,
-        replay_path: str | None = None,
-        accelerated_time: bool = False,
-    ) -> None:
-        self._cl = cl_module if cl_module is not None else self._try_import_cl()
-        self._take_control = take_control
-        self._prefer_simulator = prefer_simulator
-        self._replay_path = replay_path
-        self._accelerated_time = accelerated_time
-        self._last_telemetry: dict[str, float | int | str | bool | None] = {
-            'health_status': 'offline' if self._cl is None else 'ready',
-            'drift_score': 0.12,
-            'age_of_information_ms': None,
-            'last_latency_ms': None,
-            'loop_timeout_events': 0,
-            'recording_enabled': False,
-            'sdk_available': self._cl is not None,
-            'simulator_preferred': prefer_simulator,
-        }
         descriptor = self._build_descriptor(backend_id=backend_id)
         super().__init__(descriptor=descriptor)
 
@@ -78,192 +54,241 @@ class CorticalLabsAdapter(BaseAdapter):
         return self.descriptor
 
     def prepare(self, task: TaskRequest) -> AdapterPreparationResult:
-        if self._cl is None:
-            self._last_telemetry['health_status'] = 'offline'
+        human_supervision_available = getattr(task, "human_supervision_available", True)
+        if not human_supervision_available:
+            self._last_readiness_state = "rejected"
+            self._last_health_status = "unknown"
             return AdapterPreparationResult(
                 prepared=False,
-                details=(
-                    'Cortical Labs SDK not available. Install cl-sdk or run on a CL1 system '
-                    'to enable this adapter.'
-                ),
+                details="Cortical Labs backend requires human supervision.",
             )
 
-        self._configure_environment(task)
-        supervision_required = self.descriptor.policy.human_supervision_required
-        if supervision_required and not task.human_supervision_available:
-            self._last_telemetry['health_status'] = 'degraded'
+        if not self._client.is_available():
+            self._session_open = False
+            self._last_readiness_state = "unavailable"
+            self._last_health_status = "unknown"
             return AdapterPreparationResult(
                 prepared=False,
-                details='Human supervision required for this wetware session but not available.',
+                details="Cortical Labs SDK is not installed or importable.",
             )
 
-        self._last_telemetry['health_status'] = 'ready'
-        self._last_telemetry['recording_enabled'] = bool(task.metadata.get('record', True))
-        return AdapterPreparationResult(
-            prepared=True,
-            details='CL API available; adapter configured for live or simulator-backed session.',
-        )
+        try:
+            info = self._client.open_session()
+        except CorticalLabsUnavailableError as exc:
+            self._session_open = False
+            self._last_readiness_state = "unavailable"
+            self._last_health_status = "unknown"
+            return AdapterPreparationResult(prepared=False, details=str(exc))
+
+        self._session_open = True
+        self._last_readiness_state = "ready"
+        self._last_health_status = "healthy"
+        self._last_channel_count = info.channel_count
+        self._last_fps = info.fps
+        self._last_age_of_information_ms = 0.0
+        self._last_prepare_timestamp = time.perf_counter()
+
+        details = "Cortical Labs session opened successfully."
+        if info.channel_count is not None:
+            details += f" channels={info.channel_count}"
+        if info.fps is not None:
+            details += f", fps={info.fps}"
+
+        return AdapterPreparationResult(prepared=True, details=details)
 
     def invoke(self, task: TaskRequest) -> AdapterInvocationResult:
-        if self._cl is None:
-            raise RuntimeError('Cortical Labs SDK is not installed.')
+        if not self._session_open:
+            return AdapterInvocationResult(
+                backend_id=self.backend_id(),
+                task_id=task.task_id,
+                output_payload={},
+                confidence=None,
+                execution_latency_ms=0.0,
+                backend_state="unavailable",
+                notes="Cortical Labs session is not open; call prepare() first.",
+            )
 
-        self._configure_environment(task)
-        channel = int(task.metadata.get('channel', 0))
-        current_ua = float(task.metadata.get('current_uA', 6.0))
-        observation_window_ms = float(task.metadata.get('observation_window_ms', 50.0))
-        burst_count = int(task.metadata.get('burst_count', 1))
-        burst_frequency_hz = float(task.metadata.get('burst_frequency_hz', 20.0))
-        record = bool(task.metadata.get('record', True))
+        channel, amplitude_ua = self._extract_stimulation(task)
+        observation_window_ms = self._extract_observation_window(task)
+        pre_delay_ms = self._extract_pre_delay(task)
 
-        start = time.perf_counter()
-        recording_path = None
-        system_attributes: dict[str, Any] = {}
-        notes = []
+        try:
+            result = self._client.stimulate_and_record(
+                channel=channel,
+                amplitude_ua=amplitude_ua,
+                observation_window_ms=observation_window_ms,
+                pre_delay_ms=pre_delay_ms,
+            )
+        except CorticalLabsInvocationError as exc:
+            self._last_health_status = "degraded"
+            self._last_readiness_state = "ready"
+            return AdapterInvocationResult(
+                backend_id=self.backend_id(),
+                task_id=task.task_id,
+                output_payload={},
+                confidence=None,
+                execution_latency_ms=0.0,
+                backend_state="error",
+                notes=str(exc),
+            )
 
-        with self._cl.open(take_control=self._take_control, wait_until_recordable=True) as neurons:
-            recording = neurons.record() if record and hasattr(neurons, 'record') else None
-            burst_design = self._build_burst_design(burst_count=burst_count, burst_frequency_hz=burst_frequency_hz)
-            try:
-                if burst_design is None:
-                    neurons.stim(channel, current_ua)
-                else:
-                    neurons.stim(channel, current_ua, burst_design)
-            except TypeError:
-                # Fall back to the simpler documented scalar-current form.
-                neurons.stim(channel, current_ua)
-                notes.append('Fell back to scalar-current stimulation call.')
-
-            time.sleep(max(observation_window_ms, 0.0) / 1000.0)
-
-            get_attrs = getattr(self._cl, 'get_system_attributes', None)
-            if callable(get_attrs):
-                try:
-                    system_attributes = dict(get_attrs())
-                except Exception:
-                    system_attributes = {}
-
-            if recording is not None:
-                stop_result = recording.stop()
-                recording_path = getattr(stop_result, 'file_location', None) or getattr(recording, 'file_location', None)
-
-        execution_latency_ms = (time.perf_counter() - start) * 1000.0
-        self._last_telemetry.update(
-            {
-                'health_status': 'ready',
-                'age_of_information_ms': 0.0,
-                'last_latency_ms': execution_latency_ms,
-                'recording_enabled': record,
-            }
-        )
+        self._last_backend_latency_ms = result.backend_latency_ms
+        self._last_observation_latency_ms = result.observation_latency_ms
+        self._last_recording_artifact = result.recording_artifact
+        self._last_health_status = "healthy"
+        self._last_readiness_state = "ready"
+        self._last_age_of_information_ms = 0.0
 
         output_payload = {
-            'interface': 'cortical-labs-cl-api',
-            'channel': channel,
-            'current_uA': current_ua,
-            'burst_count': burst_count,
-            'burst_frequency_hz': burst_frequency_hz,
-            'observation_window_ms': observation_window_ms,
-            'recording_path': recording_path,
-            'system_attributes': system_attributes,
-            'simulator_preferred': self._prefer_simulator,
+            "response_fingerprint": result.response_summary.get(
+                "response_fingerprint",
+                "recording_completed",
+            ),
+            "observation_window_ms": observation_window_ms,
+            "stim_channel": channel,
+            "stim_amplitude_ua": amplitude_ua,
+            "recording_artifact": result.recording_artifact,
+            "raw_backend_metadata": result.raw_backend_metadata,
         }
+
+        notes = "Cortical Labs stimulation/recording cycle completed."
+        if result.recording_artifact and result.recording_artifact.get("path"):
+            notes += f" recording_path={result.recording_artifact['path']}"
+
         return AdapterInvocationResult(
             backend_id=self.backend_id(),
             task_id=task.task_id,
             output_payload=output_payload,
-            confidence=None,
-            execution_latency_ms=execution_latency_ms,
-            backend_state='ready',
-            notes='; '.join(notes) if notes else 'Cortical Labs CL API stimulation/recording cycle.',
+            confidence=0.75 if result.success else 0.0,
+            execution_latency_ms=result.backend_latency_ms,
+            backend_state="ready",
+            notes=notes,
         )
 
     def collect_telemetry(self) -> dict[str, float | int | str | bool | None]:
-        return dict(self._last_telemetry)
+        health = self._client.get_health_status()
+        readiness_state = str(health.get("readiness_state", self._last_readiness_state))
+        health_status = str(health.get("health_status", self._last_health_status))
+        channel_count = health.get("channel_count", self._last_channel_count)
+        fps = health.get("fps", self._last_fps)
+
+        telemetry = {
+            "readiness_state": readiness_state,
+            "health_status": health_status,
+            "backend_latency_ms": self._last_backend_latency_ms,
+            "observation_latency_ms": self._last_observation_latency_ms,
+            "channel_count": channel_count,
+            "fps": fps,
+            "drift_score": 0.0 if self._session_open else None,
+            "age_of_information_ms": self._last_age_of_information_ms,
+            "sdk_available": self._client.is_available(),
+        }
+
+        if self._last_recording_artifact and self._last_recording_artifact.get("path"):
+            telemetry["recording_path"] = self._last_recording_artifact["path"]
+
+        return telemetry
 
     def reset(self, mode: ResetMode | None = None) -> bool:
-        # The public CL API does not expose one uniform physical reset primitive.
-        # For the prototype we model reset as clearing transient session state.
-        self._last_telemetry['health_status'] = 'ready' if self._cl is not None else 'offline'
-        self._last_telemetry['age_of_information_ms'] = 0.0 if self._cl is not None else None
-        return self._cl is not None
+        self._client.close_session()
+        self._session_open = False
+        self._last_readiness_state = "unavailable"
+        self._last_health_status = "unknown"
+        self._last_backend_latency_ms = None
+        self._last_observation_latency_ms = None
+        self._last_recording_artifact = None
+        self._last_age_of_information_ms = None
+        return True
 
     def recalibrate(self) -> bool:
-        # Likewise treated as a session-level recovery step for the prototype.
-        if self._cl is None:
-            self._last_telemetry['health_status'] = 'offline'
+        self._client.close_session()
+        self._session_open = False
+        self._last_readiness_state = "unavailable"
+        self._last_health_status = "unknown"
+        if not self._client.is_available():
             return False
-        self._last_telemetry['drift_score'] = 0.08
-        self._last_telemetry['health_status'] = 'ready'
+        try:
+            info = self._client.open_session()
+        except CorticalLabsUnavailableError:
+            return False
+        self._session_open = True
+        self._last_readiness_state = "ready"
+        self._last_health_status = "healthy"
+        self._last_channel_count = info.channel_count
+        self._last_fps = info.fps
+        self._last_age_of_information_ms = 0.0
+        self._last_prepare_timestamp = time.perf_counter()
         return True
 
     @staticmethod
-    def _try_import_cl() -> Any | None:
+    def _extract_stimulation(task: TaskRequest) -> tuple[int, float]:
+        pattern = task.metadata.get("stimulation_pattern", {})
+        channels = pattern.get("channels", [1])
+        amplitude = pattern.get("amplitude", 0.4)
         try:
-            return import_module('cl')
-        except Exception:
-            return None
+            channel = int(channels[0]) if channels else 1
+        except (TypeError, ValueError, IndexError):
+            channel = 1
+        try:
+            amplitude_ua = float(amplitude)
+        except (TypeError, ValueError):
+            amplitude_ua = 0.4
+        return channel, amplitude_ua
 
-    def _configure_environment(self, task: TaskRequest) -> None:
-        replay_path = task.metadata.get('cl_replay_path', self._replay_path)
-        if replay_path:
-            os.environ['CL_SDK_REPLAY_PATH'] = str(replay_path)
-        if self._prefer_simulator:
-            os.environ.setdefault('CL_SDK_ACCELERATED_TIME', '1' if self._accelerated_time else '0')
+    @staticmethod
+    def _extract_observation_window(task: TaskRequest) -> int:
+        raw_value = task.metadata.get("observation_window_ms", 100)
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError):
+            return 100
 
-    def _build_burst_design(self, *, burst_count: int, burst_frequency_hz: float) -> Any | None:
-        if burst_count <= 1 or self._cl is None:
-            return None
-        burst_cls = getattr(self._cl, 'BurstDesign', None)
-        if burst_cls is None:
-            return None
-        for args, kwargs in [
-            ((), {'count': burst_count, 'frequency_hz': burst_frequency_hz}),
-            ((burst_count, burst_frequency_hz), {}),
-        ]:
-            try:
-                return burst_cls(*args, **kwargs)
-            except TypeError:
-                continue
-        return None
+    @staticmethod
+    def _extract_pre_delay(task: TaskRequest) -> int:
+        raw_value = task.metadata.get("pre_delay_ms", 20)
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError):
+            return 20
 
     @staticmethod
     def _build_descriptor(backend_id: str) -> SubstrateDescriptor:
         return SubstrateDescriptor(
             backend_id=backend_id,
-            display_name='Cortical Labs CL API Backend',
-            version='0.1.0',
+            display_name="Cortical Labs CL API Backend",
+            version="0.1.1",
             description=(
-                'Optional adapter targeting the public Cortical Labs CL API / CL SDK Simulator '
-                'for stimulation, recording, and closed-loop wetware interaction.'
+                "Optional adapter targeting the public Cortical Labs CL API / "
+                "CL SDK Simulator for stimulation, recording, and closed-loop "
+                "wetware interaction."
             ),
             input_contracts=[
                 IOContract(
-                    name='stimulation_input',
+                    name="stimulation_input",
                     modality=SignalModality.SPIKES,
                     encoding=IOEncoding.EVENT_STREAM,
-                    description='Spike-oriented stimulation requests mapped onto CL API stimulation calls.',
+                    description="Spike-oriented stimulation requests mapped onto CL API stimulation calls.",
                 ),
                 IOContract(
-                    name='control_input',
+                    name="control_input",
                     modality=SignalModality.CONTROL_SIGNAL,
                     encoding=IOEncoding.JSON,
                     required=False,
-                    description='Optional session and recording configuration metadata.',
+                    description="Optional session and recording configuration metadata.",
                 ),
             ],
             output_contracts=[
                 IOContract(
-                    name='recording_and_state',
+                    name="recording_and_state",
                     modality=SignalModality.SPIKES,
                     encoding=IOEncoding.JSON,
-                    description='Recording metadata and session-visible wetware state.',
+                    description="Recording metadata and session-visible wetware state.",
                 )
             ],
             timing=TimingContract(
                 regime=TimingRegime.MILLISECONDS,
-                typical_latency_ms=1.0,
-                latency_jitter_ms=0.5,
+                typical_latency_ms=100.0,
+                latency_jitter_ms=20.0,
                 warmup_required=True,
                 streaming_supported=True,
             ),
@@ -272,13 +297,64 @@ class CorticalLabsAdapter(BaseAdapter):
                 reprogrammable=True,
                 recalibration_supported=True,
                 stateful=True,
-                notes='Physical reset and wetware handling remain application-specific; the adapter models session-level recovery.',
+                notes="Physical reset and wetware handling remain application-specific; the adapter models session-level recovery.",
             ),
             telemetry=TelemetryContract(
                 metrics=[
-                    TelemetryField(name='last_latency_ms', units='ms', description='Most recent CL API round-trip latency.', lower_is_better=True),
-                    TelemetryField(name='loop_timeout_events', units='count', description='Timeout or jitter events detected at the adapter layer.', lower_is_better=True),
-                    TelemetryField(name='drift_score', units='fraction', description='Lightweight wetware drift/readiness proxy.', lower_is_better=True),
+                    TelemetryField(
+                        name="backend_latency_ms",
+                        units="ms",
+                        description="Most recent CL API round-trip latency including the observation cycle.",
+                        lower_is_better=True,
+                    ),
+                    TelemetryField(
+                        name="observation_latency_ms",
+                        units="ms",
+                        description="Latency measured from stimulation until the observation cycle completes.",
+                        lower_is_better=True,
+                    ),
+                    TelemetryField(
+                        name="readiness_state",
+                        units="state",
+                        description="Current readiness state of the Cortical Labs session.",
+                        lower_is_better=None,
+                    ),
+                    TelemetryField(
+                        name="health_status",
+                        units="state",
+                        description="Current wetware/session health status exposed by the adapter.",
+                        lower_is_better=None,
+                    ),
+                    TelemetryField(
+                        name="recording_path",
+                        units="path",
+                        description="Path to the most recent recording artifact when available.",
+                        lower_is_better=None,
+                    ),
+                    TelemetryField(
+                        name="channel_count",
+                        units="count",
+                        description="Channel count reported by the active CL session.",
+                        lower_is_better=None,
+                    ),
+                    TelemetryField(
+                        name="fps",
+                        units="frames_per_second",
+                        description="Frames per second reported by the CL session.",
+                        lower_is_better=None,
+                    ),
+                    TelemetryField(
+                        name="drift_score",
+                        units="fraction",
+                        description="Lightweight wetware drift/readiness proxy.",
+                        lower_is_better=True,
+                    ),
+                    TelemetryField(
+                        name="age_of_information_ms",
+                        units="ms",
+                        description="Approximate age of the current telemetry snapshot.",
+                        lower_is_better=True,
+                    ),
                 ],
                 supports_health_status=True,
                 supports_confidence=False,
@@ -286,21 +362,21 @@ class CorticalLabsAdapter(BaseAdapter):
                 supports_age_of_information=True,
             ),
             twin_binding=TwinBinding(
-                twin_kind='external_api_or_simulator',
-                fidelity_level='api-targeted',
+                twin_kind="external_api_or_simulator",
+                fidelity_level="api_targeted",
                 calibration_confidence=0.75,
-                twin_notes='Targets the public CL API and its simulator; not part of the reported quantitative evaluation.',
+                twin_notes="Targets the public CL API and its simulator; not part of the reported quantitative evaluation.",
             ),
             policy=PolicyConstraints(
                 locality=Locality.LAB,
                 tenancy=TenancyModel.RESERVED,
-                safety_notes='Wetware access with explicit stimulation and recording semantics.',
+                safety_notes="Wetware access with explicit stimulation and recording semantics.",
                 exclusive_access_required=True,
                 human_supervision_required=True,
             ),
             capability=CapabilityDescriptor(
                 substrate_class=SubstrateClass.WETWARE,
-                supported_task_types=['monitoring', 'control', 'temporal_inference'],
+                supported_task_types=["monitoring", "control", "temporal_inference"],
                 training_mode=TrainingMode.HYBRID,
                 observability=ObservabilityLevel.PARTIAL,
                 stochastic=True,
@@ -310,7 +386,7 @@ class CorticalLabsAdapter(BaseAdapter):
                 repeated_invocation_supported=True,
             ),
             custom_metadata={
-                'paper_role': 'existing wetware API integration target',
-                'sdk_package': 'cl-sdk',
+                "paper_role": "existing wetware API integration target",
+                "sdk_package": "cl-sdk",
             },
         )

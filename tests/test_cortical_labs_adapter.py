@@ -1,74 +1,136 @@
+"""Tests for the current Cortical Labs adapter."""
+
 from __future__ import annotations
+
+from pathlib import Path
+import sys
+import types
+
+import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from adapters.cortical_labs_adapter import CorticalLabsAdapter
 from demos.common import make_cortical_task
 
 
 class _FakeRecording:
-    file_location = "./fake_recording.h5"
+    name = "fake_recording.h5"
+    path = "C:/tmp/fake_recording.h5"
+    uri_path = "fake_recording.h5"
 
-    def stop(self):
-        return self
+    def wait_until_stopped(self) -> None:
+        return None
 
 
 class _FakeNeurons:
-    def __init__(self):
-        self.stim_calls = []
+    def get_channel_count(self) -> int:
+        return 64
 
-    def record(self):
+    def get_frames_per_second(self) -> float:
+        return 25000.0
+
+    def get_frame_duration_us(self) -> int:
+        return 40
+
+    def record(self, stop_after_seconds: float = 1.0):
         return _FakeRecording()
 
-    def stim(self, *args):
-        self.stim_calls.append(args)
+    def stim(self, channel: int, amplitude_ua: float) -> None:
+        return None
 
 
-class _FakeContext:
-    def __init__(self, neurons):
-        self._neurons = neurons
-
+class _FakeContextManager:
     def __enter__(self):
-        return self._neurons
+        return _FakeNeurons()
 
     def __exit__(self, exc_type, exc, tb):
         return False
 
 
-class _FakeCL:
-    def __init__(self):
-        self.neurons = _FakeNeurons()
+class _FakeCLModule:
+    @staticmethod
+    def open(*, take_control=True, wait_until_recordable=True):
+        return _FakeContextManager()
 
-    def open(self, **kwargs):
-        return _FakeContext(self.neurons)
-
-    def get_system_attributes(self):
-        return {"project_id": "fake-project"}
+    @staticmethod
+    def get_system_attributes():
+        return {"backend": "fake-cl", "mode": "simulator"}
 
 
-def test_cortical_labs_adapter_prepare_and_invoke():
-    adapter = CorticalLabsAdapter(cl_module=_FakeCL())
+def _install_fake_cl(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_module = types.ModuleType("cl")
+    fake_module.open = _FakeCLModule.open
+    fake_module.get_system_attributes = _FakeCLModule.get_system_attributes
+    monkeypatch.setitem(sys.modules, "cl", fake_module)
+
+
+def test_cortical_descriptor_structure_is_present() -> None:
+    adapter = CorticalLabsAdapter()
+    descriptor = adapter.describe()
+
+    assert descriptor.backend_id == "cortical-labs-backend"
+    assert descriptor.display_name == "Cortical Labs CL API Backend"
+    assert str(descriptor.policy.locality) == "lab"
+    assert descriptor.telemetry.supports_health_status is True
+
+    metric_names = {m.name for m in descriptor.telemetry.metrics}
+    assert "backend_latency_ms" in metric_names
+    assert "readiness_state" in metric_names
+    assert "health_status" in metric_names
+
+
+def test_cortical_prepare_reports_unavailable_without_sdk() -> None:
+    adapter = CorticalLabsAdapter()
+    adapter._client._cl = None
+
+    task = make_cortical_task()
+    prep = adapter.prepare(task)
+
+    assert prep.prepared is False
+    assert "not installed" in prep.details.lower() or "importable" in prep.details.lower()
+
+
+def test_cortical_prepare_invoke_and_telemetry_with_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_cl(monkeypatch)
+
+    adapter = CorticalLabsAdapter()
+    adapter._client = adapter._client.__class__()
+
     task = make_cortical_task()
 
     prep = adapter.prepare(task)
     assert prep.prepared is True
 
-    result = adapter.invoke(task)
-    assert result.backend_id == adapter.backend_id()
-    assert result.output_payload["interface"] == "cortical-labs-cl-api"
-    assert result.output_payload["recording_path"] == "./fake_recording.h5"
+    inv = adapter.invoke(task)
+    assert inv.backend_id == "cortical-labs-backend"
+    assert inv.backend_state == "ready"
+    assert inv.confidence == 0.75
+    assert inv.output_payload["response_fingerprint"] == "recording_completed"
+    assert inv.output_payload["stim_channel"] == 1
+    assert "recording_artifact" in inv.output_payload
 
-    telemetry = adapter.collect_telemetry()
-    assert telemetry["sdk_available"] is True
-    assert telemetry["health_status"] == "ready"
+    tel = adapter.collect_telemetry()
+    assert tel["readiness_state"] == "ready"
+    assert tel["health_status"] == "healthy"
+    assert "backend_latency_ms" in tel
+    assert "channel_count" in tel
+    assert "fps" in tel
+
+    adapter.reset()
 
 
-def test_cortical_labs_adapter_reports_unavailable_without_sdk():
-    adapter = CorticalLabsAdapter(cl_module=None)
-    task = make_cortical_task(task_id="pytest-cortical-offline")
+def test_cortical_prepare_rejects_without_supervision(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_cl(monkeypatch)
+
+    adapter = CorticalLabsAdapter()
+    adapter._client = adapter._client.__class__()
+
+    task = make_cortical_task()
+    task.human_supervision_available = False
 
     prep = adapter.prepare(task)
     assert prep.prepared is False
-    assert "SDK not available" in prep.details
-
-    telemetry = adapter.collect_telemetry()
-    assert telemetry["sdk_available"] is False
-    assert telemetry["health_status"] == "offline"
+    assert "requires human supervision" in prep.details.lower()
